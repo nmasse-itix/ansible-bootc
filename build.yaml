@@ -1,0 +1,154 @@
+# This is an Ansible Playbook to build a bootc container image using Podman for two architectures: amd64 and arm64.
+- name: Build bootc container image
+  hosts: builder
+  vars:
+    build_name: "example-flightctl"
+    bootc_project: '{{ playbook_dir }}/examples/flightctl'
+    image_from:
+      x86_64: "registry.redhat.io/rhel9/rhel-bootc:9.4"
+      aarch64: "quay.io/redhat-et/rhel-bootc-tegra:base"
+    image_to: "edge-registry.itix.fr/bootc/hello-world:latest"
+    validate_certs: true
+    # This file must be present on all builder hosts as well as on the control node if pushing to/pulling from a remote registry
+    # You can create it with:
+    #   sudo REGISTRY_AUTH_FILE=/etc/containers/auth.json podman login registry.redhat.io
+    #   sudo REGISTRY_AUTH_FILE=/etc/containers/auth.json podman login quay.io
+    auth_file: "/etc/containers/auth.json"
+  tasks:
+
+  - name: Install pre-requisite packages
+    ansible.builtin.dnf:
+      name:
+      - podman
+      - buildah
+      - skopeo
+      - rsync
+      state: present
+
+  - name: Check if Podman auth file exists
+    ansible.builtin.stat:
+      path: "{{ auth_file }}"
+    register: podman_auth_file
+    when: auth_file is defined
+
+  - assert:
+      that:
+        - podman_auth_file.stat.exists
+      fail_msg: |
+        Podman auth file {{ auth_file }} does not exist. Please create it to authenticate to container registries.
+        You can create it using the 'podman login' command.
+        Example:
+          sudo REGISTRY_AUTH_FILE=/etc/containers/auth.json podman login registry.redhat.io
+          sudo REGISTRY_AUTH_FILE=/etc/containers/auth.json podman login quay.io
+          ansible-playbook build.yaml -e auth_file=/etc/containers/auth.json
+    when: auth_file is defined
+
+  - name: Pull bootc base image
+    containers.podman.podman_image:
+      name: "{{ image_from[ansible_architecture] }}"
+      arch: "{{ ansible_architecture }}"
+      state: present
+      pull: true
+      validate_certs: '{{ validate_certs | default(omit) }}'
+      auth_file: "{{ auth_file | default(omit) }}"
+
+  - name: Create a temporary directory for the build
+    ansible.builtin.tempfile:
+      state: directory
+      suffix: bootc_build_
+    register: temp_build_dir
+
+  - name: Copy the bootc project directory to the builder
+    ansible.posix.synchronize:
+      mode: push
+      src: "{{ bootc_project }}/"
+      dest: "{{ temp_build_dir.path }}/bootc/"
+      archive: no
+      recursive: yes
+      compress: no
+      delete: no
+
+  - name: Build bootc container image
+    containers.podman.podman_image:
+      name: "localhost/{{ build_name }}-{{ ansible_architecture }}:latest"
+      build:
+        extra_args: "--from={{ image_from[ansible_architecture] }}"
+        cache: false
+        file: "{{ temp_build_dir.path }}/bootc/Containerfile"
+      path: "{{ temp_build_dir.path }}/bootc"
+      force: true
+      push: false
+      state: build
+
+  - name: Export the built image to the temporary directory
+    containers.podman.podman_image:
+      name: "localhost/{{ build_name }}-{{ ansible_architecture }}:latest"
+      push: true
+      push_args:
+        compress: false
+        dest: "{{ temp_build_dir.path }}/{{ build_name }}-{{ ansible_architecture }}.tar"
+        format: oci
+        transport: oci-archive
+      state: present
+
+  - name: Change ownership of the exported image archive to the ansible user
+    ansible.builtin.file:
+      path: "{{ file.path }}"
+      mode: "{{ file.mode }}"
+    loop:
+    - path: "{{ temp_build_dir.path }}/{{ build_name }}-{{ ansible_architecture }}.tar"
+      mode: '0644'
+    - path: "{{ temp_build_dir.path }}"
+      mode: '0755'
+    loop_control:
+      loop_var: file
+      label: "{{ file.path }}"
+
+  # The synchronize module is used here to efficiently transfer large files
+  - name: Fetch the exported image archive to the control node
+    ansible.posix.synchronize:
+      mode: pull
+      src: "{{ temp_build_dir.path }}/{{ build_name }}-{{ ansible_architecture }}.tar"
+      dest: "{{ playbook_dir }}/builds/"
+      archive: no
+      compress: no
+      delete: no
+    delegate_to: localhost
+
+  - name: Remove the temporary build directory
+    ansible.builtin.file:
+      path: "{{ temp_build_dir.path }}"
+      state: absent
+
+  - block:
+
+    - name: Remove the Podman manifest if it exists
+      ansible.builtin.command:
+        cmd: >
+          podman manifest rm -i localhost/{{ build_name }}:latest
+
+    - name: Create a manifest list for multi-architecture image
+      ansible.builtin.command:
+        cmd: >
+          podman manifest create localhost/{{ build_name }}:latest
+
+    - name: Add architecture-specific images to the manifest list
+      ansible.builtin.command:
+        cmd: >
+          podman manifest add localhost/{{ build_name }}:latest oci-archive:{{ playbook_dir }}/builds/{{ build_name }}-{{ architecture }}.tar
+      loop: '{{ architectures }}'
+      loop_control:
+        loop_var: architecture
+
+    - name: Push the multi-architecture manifest to the remote registry
+      ansible.builtin.command:
+        cmd: >
+          podman manifest push --quiet --rm --all --tls-verify={{ validate_certs | default('true') }} localhost/{{ build_name }}:latest {{ image_to }} 
+      environment:
+        REGISTRY_AUTH_FILE: "{{ auth_file | default(omit) }}"
+    delegate_to: localhost
+    run_once: true
+    become: yes
+    vars:
+      # Computes the list of architectures based on the "ansible_architecture" values of the builder hosts
+      architectures: '{{ hostvars | dict2items | map(attribute="value") | selectattr("ansible_architecture", "defined") | map(attribute="ansible_architecture") | list }}'

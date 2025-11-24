@@ -1,0 +1,3 @@
+[builder]
+build-aarch64.example.tld ansible_user=john ansible_become=yes
+build-x86_64.example.tld ansible_user=john ansible_become=yes
