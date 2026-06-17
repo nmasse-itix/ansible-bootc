@@ -1,0 +1,16 @@
+[Unit]
+Description=Hello, World!
+Require=copy-embedded-images.service
+After=copy-embedded-images.service
+
+[Container]
+Image=docker.io/library/helloworld:latest
+Pull=never
+
+[Service]
+# Containers performs action and then stops gracefully
+Type=oneshot
+
+[Install]
+# Start by default on boot
+WantedBy=multi-user.target default.target

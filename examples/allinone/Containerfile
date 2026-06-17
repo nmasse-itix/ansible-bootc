@@ -1,0 +1,42 @@
+FROM registry.redhat.io/rhel9/rhel-bootc:9.4
+
+ARG ADMIN_USERNAME=demo \
+    ADMIN_PASSWORD=redhat
+
+RUN <<EOF
+set -Eeuo pipefail
+
+# Enable EPEL repos
+dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+
+# Install packages
+dnf install -y mkpasswd podman skopeo flightctl-agent cockpit cockpit-podman cockpit-files \
+               cockpit-ostree cockpit-pcp cockpit-system greenboot greenboot-default-health-checks \
+               stress-ng yq podman-compose tmux tcpdump htop iptraf-ng
+dnf clean all
+
+# Create admin user if specified
+if [ -n "$ADMIN_USERNAME" ]; then
+  useradd -m -G wheel -p "$(echo -n "$ADMIN_PASSWORD" | mkpasswd -m bcrypt --stdin)" "$ADMIN_USERNAME"
+fi
+
+# Pull physically-bound images (see https://docs.fedoraproject.org/en-US/bootc/embedding-containers/)
+/usr/local/bin/embed_image.sh docker.io/library/helloworld:latest
+EOF
+
+ADD --chown=root:root root /
+
+RUN <<EOF
+set -Eeuo pipefail
+
+# Enable systemd services and sockets
+systemctl enable cockpit.socket
+
+# Set proper ownership and SELinux context on SSH authorized keys
+if [ -n "$ADMIN_USERNAME" -a -f "/etc/ssh/authorized_keys/$ADMIN_USERNAME.keys" ]; then
+  chown "$ADMIN_USERNAME:$ADMIN_USERNAME" "/etc/ssh/authorized_keys/$ADMIN_USERNAME.keys"
+fi
+semanage fcontext -a -t ssh_home_t "/etc/ssh/authorized_keys(/.*)?"
+restorecon -Rf /etc/ssh/authorized_keys
+
+EOF

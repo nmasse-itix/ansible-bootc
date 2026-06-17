@@ -1,0 +1,10 @@
+[Unit]
+Description=Copy embedded images to podman local storage
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/copy_embedded_images.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
