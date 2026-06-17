@@ -4,7 +4,7 @@ Require=copy-embedded-images.service
 After=copy-embedded-images.service
 
 [Container]
-Image=docker.io/library/helloworld:latest
+Image=docker.io/library/hello-world:latest
 Pull=never
 
 [Service]

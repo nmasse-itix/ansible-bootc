@@ -10,7 +10,7 @@ set -Eeuo pipefail
 dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 
 # Install packages
-dnf install -y mkpasswd podman skopeo flightctl-agent cockpit cockpit-podman cockpit-files \
+dnf install -y mkpasswd podman skopeo cockpit cockpit-podman cockpit-files \
                cockpit-ostree cockpit-pcp cockpit-system greenboot greenboot-default-health-checks \
                stress-ng yq podman-compose tmux tcpdump htop iptraf-ng
 dnf clean all
@@ -19,12 +19,12 @@ dnf clean all
 if [ -n "$ADMIN_USERNAME" ]; then
   useradd -m -G wheel -p "$(echo -n "$ADMIN_PASSWORD" | mkpasswd -m bcrypt --stdin)" "$ADMIN_USERNAME"
 fi
-
-# Pull physically-bound images (see https://docs.fedoraproject.org/en-US/bootc/embedding-containers/)
-/usr/local/bin/embed_image.sh docker.io/library/helloworld:latest
 EOF
 
 ADD --chown=root:root root /
+
+# Pull physically-bound images (see https://docs.fedoraproject.org/en-US/bootc/embedding-containers/)
+RUN /usr/local/bin/embed_image.sh docker.io/library/hello-world:latest
 
 RUN <<EOF
 set -Eeuo pipefail
